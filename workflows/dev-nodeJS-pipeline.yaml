@@ -1,24 +1,6 @@
 # Feature Node.js Pipeline
 
-This reusable GitHub Actions workflow implements a complete CI/CD pipeline for Node.js applications.
-
-It performs:
-
-- Code checkout
-- Dependency installation
-- Unit testing
-- Docker image build
-- Trivy security scan
-- Push image to Amazon ECR
-- Deploy to Amazon EKS using Helm
-- Update GitHub commit status checks
-
-The workflow is triggered through `workflow_call`, allowing multiple repositories to reuse the same standardized pipeline.
-
----
-
 # Workflow
-
 
 name: feature-nodejs-pipeline
 
