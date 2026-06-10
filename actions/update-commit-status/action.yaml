@@ -1,6 +1,5 @@
 # Composite Action
 
-```yaml
 name: "Update Commit Status"
 
 description: "Updates GitHub commit status checks using the GitHub Statuses API"
@@ -45,6 +44,3 @@ runs:
             \"description\": \"${{ inputs.description }}\"
           }" \
           "https://api.github.com/repos/${{ github.repository }}/statuses/${{ inputs.sha }}"
-```
-
----
