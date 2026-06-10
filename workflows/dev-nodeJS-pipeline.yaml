@@ -1,0 +1,240 @@
+# Feature Node.js Pipeline
+
+This reusable GitHub Actions workflow implements a complete CI/CD pipeline for Node.js applications.
+
+It performs:
+
+- Code checkout
+- Dependency installation
+- Unit testing
+- Docker image build
+- Trivy security scan
+- Push image to Amazon ECR
+- Deploy to Amazon EKS using Helm
+- Update GitHub commit status checks
+
+The workflow is triggered through `workflow_call`, allowing multiple repositories to reuse the same standardized pipeline.
+
+---
+
+# Workflow
+
+
+name: feature-nodejs-pipeline
+
+on:
+  workflow_call:
+
+    # Inputs received from caller workflow
+    inputs:
+
+      project:
+        required: true
+        type: string
+
+      component:
+        required: true
+        type: string
+
+      environment:
+        required: true
+        type: string
+
+# Global variables
+env:
+
+  # AWS Account ID used for ECR
+  ACC_ID: 160885265516
+
+jobs:
+
+  feature-nodejs-pipeline:
+
+    # Self-hosted runner
+    runs-on: self-hosted
+
+    steps:
+
+    # -------------------------------------------------
+    # Checkout Source Code
+    # -------------------------------------------------
+
+    - name: checkout code
+      uses: actions/checkout@v6
+
+    - name: list files
+      run: ls -l
+
+    # -------------------------------------------------
+    # Generate Application Version
+    # -------------------------------------------------
+
+    - name: get the version
+      run: |
+
+        # Use first 9 characters of commit SHA
+        echo "APP_VERSION=${GITHUB_SHA::9}" >> "$GITHUB_ENV"
+
+    # -------------------------------------------------
+    # Print Inputs
+    # -------------------------------------------------
+
+    - name: print inputs
+      run: |
+        echo ${{ inputs.project }}
+        echo "version: ${APP_VERSION}"
+
+    # -------------------------------------------------
+    # Install Dependencies
+    # -------------------------------------------------
+
+    - name: install dependencies
+      run: npm install
+
+    # -------------------------------------------------
+    # Unit Testing
+    # -------------------------------------------------
+
+    - name: run unit tests
+      id: unit_tests
+      run: echo "run unit tests"
+
+    # Update GitHub commit status
+    - name: Update unit tests status
+      if: always()
+      uses: daws-86s/workflows/.github/actions/update-commit-status@main
+      with:
+        sha: ${{ github.sha }}
+        state: ${{ steps.unit_tests.outcome }}
+        context: UNIT_TESTS
+        description: ${{ steps.unit_tests.outcome }}
+
+    # -------------------------------------------------
+    # Docker Build
+    # -------------------------------------------------
+
+    - name: docker build
+      id: docker_build
+      run: |
+
+        docker build \
+          -t ${ACC_ID}.dkr.ecr.us-east-1.amazonaws.com/${{ inputs.project }}/${{ inputs.component }}:${APP_VERSION} .
+
+        docker images
+
+    # Update GitHub commit status
+    - name: Update docker build status
+      if: always()
+      uses: daws-86s/workflows/.github/actions/update-commit-status@main
+      with:
+        sha: ${{ github.sha }}
+        state: ${{ steps.docker_build.outcome }}
+        context: DOCKER_BUILD
+        description: ${{ steps.docker_build.outcome }}
+
+    # -------------------------------------------------
+    # Security Scan
+    # -------------------------------------------------
+
+    - name: Security Check (Trivy)
+      id: security_check
+      shell: bash
+      run: |
+
+        echo "Running Trivy Scan..."
+
+        trivy image \
+          --scanners vuln \
+          --severity HIGH,CRITICAL,MEDIUM \
+          --pkg-types os \
+          --exit-code 1 \
+          --format table \
+          ${ACC_ID}.dkr.ecr.us-east-1.amazonaws.com/${{ inputs.project }}/${{ inputs.component }}:${APP_VERSION}
+
+    # Update GitHub commit status
+    - name: Update scan status
+      if: always()
+      uses: daws-86s/workflows/.github/actions/update-commit-status@main
+      with:
+        sha: ${{ github.sha }}
+        state: ${{ steps.security_check.outcome }}
+        context: SECURITY_CHECK
+        description: ${{ steps.security_check.outcome }}
+
+    # -------------------------------------------------
+    # Configure AWS Credentials
+    # -------------------------------------------------
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v5.1.1
+      with:
+        aws-region: us-east-1
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+    # -------------------------------------------------
+    # Push Docker Image to ECR
+    # -------------------------------------------------
+
+    - name: push image
+      run: |
+
+        aws ecr get-login-password \
+        --region us-east-1 | \
+        docker login \
+        --username AWS \
+        --password-stdin \
+        ${ACC_ID}.dkr.ecr.us-east-1.amazonaws.com
+
+        docker push \
+        ${ACC_ID}.dkr.ecr.us-east-1.amazonaws.com/${{ inputs.project }}/${{ inputs.component }}:${APP_VERSION}
+
+    # -------------------------------------------------
+    # Authenticate to EKS
+    # -------------------------------------------------
+
+    - name: authenticate to EKS
+      run: |
+
+        aws eks update-kubeconfig \
+          --region us-east-1 \
+          --name roboshop-dev
+
+        kubectl get nodes
+
+    # -------------------------------------------------
+    # Checkout Deployment Repository
+    # -------------------------------------------------
+
+    - name: checkout catalogue deploy repo
+      uses: actions/checkout@v6
+      with:
+        repository: daws-86s/catalogue-deploy
+
+    # -------------------------------------------------
+    # Deploy Application using Helm
+    # -------------------------------------------------
+
+    - name: deploy to DEV cluster
+      id: dev_deploy
+      run: |
+
+        helm upgrade --install \
+          ${{ inputs.component }} \
+          -f values-${{ inputs.environment }}.yaml \
+          -n ${{ inputs.project }} \
+          --set deployment.imageVersion=${APP_VERSION} \
+          --atomic \
+          --wait \
+          --timeout=5m \
+          .
+
+    # Update GitHub commit status
+    - name: Update DEV Deploy status
+      if: always()
+      uses: daws-86s/workflows/.github/actions/update-commit-status@main
+      with:
+        sha: ${{ github.sha }}
+        state: ${{ steps.dev_deploy.outcome }}
+        context: DEV_DEPLOY
+        description: ${{ steps.dev_deploy.outcome }}
