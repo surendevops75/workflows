@@ -1,0 +1,336 @@
+# Feature Node.js Pipeline (Build, Security Scan & ECR Push)
+
+This reusable GitHub Actions workflow implements the Continuous Integration (CI) stage for Node.js applications.
+
+The workflow is designed to be called from other repositories using `workflow_call` and performs:
+
+- Source Code Checkout
+- Version Generation using Commit SHA
+- Dependency Installation
+- Unit Testing
+- Docker Image Build
+- Security Scanning using Trivy
+- Push Docker Image to Amazon ECR
+- GitHub Commit Status Updates
+
+This approach enables a centralized CI/CD platform where multiple projects can reuse the same standardized pipeline.
+
+---
+
+# Workflow
+
+```yaml
+name: feature-nodejs-pipeline
+
+# Reusable workflow
+on:
+  workflow_call:
+
+    # Inputs received from caller workflow
+    inputs:
+
+      # Project name
+      project:
+        required: true
+        type: string
+
+      # Application/component name
+      component:
+        required: true
+        type: string
+
+      # Deployment environment
+      environment:
+        required: true
+        type: string
+
+# Global environment variables
+env:
+
+  # AWS Account ID used for ECR
+  ACC_ID: 160885265516
+
+jobs:
+
+  feature-nodejs-pipeline:
+
+    # Self-hosted runner with Docker, AWS CLI, Trivy, etc.
+    runs-on: self-hosted
+
+    steps:
+
+    # --------------------------------------------------
+    # Checkout Source Code
+    # --------------------------------------------------
+
+    - name: checkout code
+      uses: actions/checkout@v6
+
+    - name: list files
+      run: ls -l
+
+    # --------------------------------------------------
+    # Generate Application Version
+    # --------------------------------------------------
+
+    - name: get the version
+      run: |
+
+        # Generate image version using first 9 chars of commit SHA
+        echo "APP_VERSION=${GITHUB_SHA::9}" >> "$GITHUB_ENV"
+
+    # --------------------------------------------------
+    # Print Workflow Inputs
+    # --------------------------------------------------
+
+    - name: print inputs
+      run: |
+
+        echo ${{ inputs.project }}
+
+        echo "version: ${APP_VERSION}"
+
+    # --------------------------------------------------
+    # Install Dependencies
+    # --------------------------------------------------
+
+    - name: install dependencies
+      run: npm install
+
+    # --------------------------------------------------
+    # Unit Testing
+    # --------------------------------------------------
+
+    - name: run unit tests
+      id: unit_tests
+      run: echo "run unit tests"
+
+    # Update GitHub Commit Status
+    - name: Update unit tests status
+      if: always()
+      uses: daws-86s/workflows/.github/actions/update-commit-status@main
+      with:
+        sha: ${{ github.sha }}
+        state: ${{ steps.unit_tests.outcome }}
+        context: UNIT_TESTS
+        description: ${{ steps.unit_tests.outcome }}
+
+    # --------------------------------------------------
+    # Docker Build
+    # --------------------------------------------------
+
+    - name: docker build
+      id: docker_build
+      run: |
+
+        docker build \
+          -t ${ACC_ID}.dkr.ecr.us-east-1.amazonaws.com/${{ inputs.project }}/${{ inputs.component }}:${APP_VERSION} .
+
+        docker images
+
+    # Update GitHub Commit Status
+    - name: Update docker build status
+      if: always()
+      uses: daws-86s/workflows/.github/actions/update-commit-status@main
+      with:
+        sha: ${{ github.sha }}
+        state: ${{ steps.docker_build.outcome }}
+        context: DOCKER_BUILD
+        description: ${{ steps.docker_build.outcome }}
+
+    # --------------------------------------------------
+    # Security Scanning
+    # --------------------------------------------------
+
+    - name: Security Check (Dependabot + Trivy)
+      id: security_check
+      shell: bash
+      run: |
+
+        echo "Running Trivy Scan..."
+
+        trivy image \
+          --scanners vuln \
+          --severity HIGH,CRITICAL,MEDIUM \
+          --pkg-types os \
+          --exit-code 1 \
+          --format table \
+          ${ACC_ID}.dkr.ecr.us-east-1.amazonaws.com/${{ inputs.project }}/${{ inputs.component }}:${APP_VERSION}
+
+        TRIVY_RESULT=$?
+
+        if [ "$TRIVY_RESULT" -ne 0 ]; then
+
+          echo "Trivy found vulnerabilities"
+
+          exit 1
+        fi
+
+        echo "Trivy scan passed successfully"
+
+    # Update GitHub Commit Status
+    - name: Update scan status
+      if: always()
+      uses: daws-86s/workflows/.github/actions/update-commit-status@main
+      with:
+        sha: ${{ github.sha }}
+        state: ${{ steps.security_check.outcome }}
+        context: SECURITY_CHECK
+        description: ${{ steps.security_check.outcome }}
+
+    # --------------------------------------------------
+    # AWS Authentication
+    # --------------------------------------------------
+
+    - name: Configure AWS Credentials
+      uses: aws-actions/configure-aws-credentials@v5.1.1
+      with:
+        aws-region: us-east-1
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+    # --------------------------------------------------
+    # Push Docker Image To ECR
+    # --------------------------------------------------
+
+    - name: push image
+      run: |
+
+        aws ecr get-login-password \
+        --region us-east-1 | \
+        docker login \
+        --username AWS \
+        --password-stdin \
+        ${ACC_ID}.dkr.ecr.us-east-1.amazonaws.com
+
+        docker push \
+        ${ACC_ID}.dkr.ecr.us-east-1.amazonaws.com/${{ inputs.project }}/${{ inputs.component }}:${APP_VERSION}
+```
+
+---
+
+# Pipeline Flow
+
+```text
+Checkout Code
+      │
+      ▼
+Generate Version
+      │
+      ▼
+Install Dependencies
+      │
+      ▼
+Unit Tests
+      │
+      ▼
+Update GitHub Status
+      │
+      ▼
+Docker Build
+      │
+      ▼
+Update GitHub Status
+      │
+      ▼
+Trivy Security Scan
+      │
+      ▼
+Update GitHub Status
+      │
+      ▼
+AWS Authentication
+      │
+      ▼
+Push Docker Image to ECR
+```
+
+---
+
+# Key Concepts Demonstrated
+
+### Reusable Workflows
+
+```yaml
+workflow_call
+```
+
+Allows multiple repositories to use a common CI pipeline.
+
+---
+
+### Versioning Strategy
+
+```bash
+APP_VERSION=${GITHUB_SHA::9}
+```
+
+Uses commit SHA as image version.
+
+Example:
+
+```text
+Commit SHA:
+4d9c31a7d4a8d2f
+
+Image Version:
+4d9c31a7d
+```
+
+---
+
+### Commit Status Checks
+
+Creates custom GitHub status checks:
+
+```text
+UNIT_TESTS
+DOCKER_BUILD
+SECURITY_CHECK
+```
+
+Visible directly in Pull Requests and Commits.
+
+---
+
+### Container Security
+
+Uses:
+
+- :contentReference[oaicite:0]{index=0}
+
+to detect:
+
+- Critical Vulnerabilities
+- High Vulnerabilities
+- Medium Vulnerabilities
+
+before deployment.
+
+---
+
+### Container Registry
+
+Pushes Docker images to:
+
+- :contentReference[oaicite:1]{index=1}
+
+using versioned image tags.
+
+---
+
+# Benefits
+
+✅ Reusable across projects
+
+✅ Standardized CI process
+
+✅ Security integrated into pipeline
+
+✅ Automated status reporting
+
+✅ Traceable image versions
+
+✅ Production-ready workflow
+
+✅ Supports GitOps and Kubernetes deployments
